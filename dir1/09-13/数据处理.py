@@ -1,0 +1,77 @@
+import tqdm
+import os
+import pandas as pd
+import numpy as np
+
+DATE_LI = ['2009-01', '2009-03', '2009-06', '2009-09', '2009-12', '2010-03', '2010-06', '2010-09', '2010-12',
+             '2011-03', '2011-06', '2011-09', '2011-12', '2012-03', '2012-06', '2012-09', '2012-12', '2013-03',
+             '2013-06', '2013-09', '2013-12']
+
+
+def filter_date(a_date):
+    year, mon, day = a_date.split("-")
+    # 2009年只要1月
+    if year == "2009":
+        need_mons = [1, 3, 6, 9, 12]
+    else:
+        need_mons = [3, 6, 9, 12]
+
+    if int(mon) in need_mons:
+        return year + "-" + mon
+    return "del"
+
+excel_name = r"./2009-2013.xlsx"
+df = pd.read_excel(excel_name, converters={"Stkcd": str})
+
+# 只保留 1、3、6、9、12月的数据
+# 添加一列date，只要 年-月,同时把不要的数据做个标记
+df["date"] = df["Trddt"].apply(filter_date)
+# 删掉不要的数据
+df = df[~df["date"].isin(["del"])]
+
+
+result_data = None
+# 聚合，按公司去重
+grouped = df.groupby(by="Stkcd")
+for key, grouped_values in tqdm.tqdm(grouped, desc="进度："):
+    # 把2009年1月的数据暂存起来
+    data_2009_01 = grouped_values[grouped_values["date"] == "2009-01"]
+
+    # 去重，保留每月最后一个值(就是最大的值)
+    grouped_values = grouped_values.drop_duplicates(subset=["date"], keep="last")
+
+    # 09-01数据为空的话：
+    if data_2009_01.empty:
+        replace_data = [key, "#N/A", "#N/A", "2009-01"]
+    else:
+        data_2009_01 = data_2009_01.drop_duplicates(subset=["date"], keep="first")
+        replace_data = data_2009_01.values[0]
+        # 把 2009-01这行不对的数据丢了先，
+        grouped_values = grouped_values[~grouped_values["date"].isin(["2009-01"])]
+
+    grouped_values = pd.DataFrame(np.insert(grouped_values.values, 0, values=replace_data, axis=0),
+                                  columns=grouped_values.columns)
+
+    # 有缺失值的就进去补充
+    if grouped_values.shape[0] != len(DATE_LI):
+        append_dates = set(grouped_values["date"].tolist()) ^ set(DATE_LI)
+        insert_data = [[key, "#N/A", "#N/A", append_date] for append_date in append_dates]
+
+        grouped_values = pd.DataFrame(np.concatenate((grouped_values.values, np.asarray(insert_data)), axis=0),
+                                      columns=grouped_values.columns)
+
+        # 按时间排序
+        grouped_values.sort_values(by="date", inplace=True)
+        # index重新排一下
+        grouped_values.reset_index(drop=True, inplace=True)
+
+    if result_data is None:
+        result_data = grouped_values.values
+    else:
+        result_data = np.concatenate((result_data, grouped_values.values), axis=0)
+
+result_df = pd.DataFrame(result_data, columns=["Stkcd", "Trddt", "Adjprcwd", "date"])
+result_df = result_df.reindex(columns=["Stkcd", "date", "Trddt", "Adjprcwd"])
+save_name = os.path.splitext(excel_name)[0] + "_result.xlsx"
+result_df.to_excel(save_name, index=False)
+print("Done!")
